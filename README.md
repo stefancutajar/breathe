@@ -18,8 +18,8 @@ Quick start
    Example (zsh):
 
    ```bash
-   export SPOTIFY_CLIENT_ID=your_client_id_here
-   export SPOTIFY_CLIENT_SECRET=your_client_secret_here
+   export SPOTIFY_CLIENT_ID=99ed2c7a7c2a4912a301941033334d30
+   export SPOTIFY_CLIENT_SECRET=c7c9db81f7da4a699c4bd49e57e4b73d
    ```
 
 3. Install dependencies:
