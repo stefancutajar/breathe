@@ -4,6 +4,9 @@ import os
 import sqlite3
 import json
 from urllib.parse import urlencode
+import csv
+from pathlib import Path
+CSV_PATH = 'dataset.csv'
 
 app = Flask(__name__)
 
@@ -126,8 +129,164 @@ def callback():
     except Exception as e:
         return f"DB save failed: {e}", 500
 
-    # Return a simple page to the user indicating success
-    return f"<h2>Success!</h2><p>Saved data for Spotify user {display_name} ({spotify_id}). You can close this tab and return to the Streamlit app.</p>"
+    # After saving, redirect back to the Streamlit frontend with ?logged_in=1 so the user sees the dashboard.
+    STREAMLIT_BASE = os.environ.get('STREAMLIT_BASE') or 'http://127.0.0.1:8501'
+    return redirect(f"{STREAMLIT_BASE}?logged_in=1")
+
+
+@app.route('/stats/top-songs')
+def stats_top_songs():
+    """Return ML model top-5 with normalized probabilities (density function)."""
+    import math
+    limit = int(request.args.get('limit', 5))
+    candidate_pool = int(request.args.get('pool', 500))
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Build track -> set(user_id)
+    track_users = {}
+    try:
+        for track_id, user_id in c.execute('SELECT track_id, user_spotify_id FROM songs'):
+            if not track_id:
+                continue
+            track_users.setdefault(track_id, set()).add(user_id or 'real_unknown')
+    except Exception:
+        pass
+    try:
+        for track_id, user_id in c.execute('SELECT track_id, user_id FROM songs_simulation'):
+            if not track_id:
+                continue
+            track_users.setdefault(track_id, set()).add(user_id or 'sim_unknown')
+    except Exception:
+        pass
+
+    if not track_users:
+        conn.close()
+        return jsonify([])
+
+    items_by_pop = sorted(track_users.items(), key=lambda kv: len(kv[1]), reverse=True)
+    candidates = items_by_pop[:candidate_pool]
+    sizes = {tid: len(users) for tid, users in candidates}
+    sim_scores = {tid: 0.0 for tid, _ in candidates}
+    n = len(candidates)
+    for i in range(n):
+        tid_i, users_i = candidates[i]
+        size_i = sizes[tid_i]
+        if size_i == 0:
+            continue
+        for j in range(i+1, n):
+            tid_j, users_j = candidates[j]
+            size_j = sizes[tid_j]
+            if size_j == 0:
+                continue
+            inter = len(users_i & users_j)
+            if inter == 0:
+                continue
+            sim = inter / math.sqrt(size_i * size_j)
+            sim_scores[tid_i] += sim
+            sim_scores[tid_j] += sim
+
+    ranked = sorted([(tid, sim_scores.get(tid, 0.0), sizes.get(tid, 0)) for tid, _ in candidates], key=lambda x: (x[1], x[2]), reverse=True)
+
+    # Normalize scores to sum to 1 (density function)
+    top_n = []
+    total_score = sum([score for _, score, _ in ranked[:limit]])
+    for tid, score, pop in ranked[:limit]:
+        prob = (score / total_score) if total_score > 0 else 0.0
+        row = c.execute('SELECT track_name, artist_name FROM songs_simulation WHERE track_id = ? LIMIT 1', (tid,)).fetchone()
+        if not row:
+            row = c.execute('SELECT track_name, artist_name FROM songs WHERE track_id = ? LIMIT 1', (tid,)).fetchone()
+        track_name = row[0] if row else None
+        artist_name = row[1] if row else None
+        top_n.append({'track_id': tid, 'track_name': track_name, 'artist_name': artist_name, 'probability': prob})
+
+    conn.close()
+    return jsonify(top_n)
+
+
+
+
+def _load_genre_map():
+    """Load a mapping track_id -> genre from CSV (cached per process)."""
+    if not Path(CSV_PATH).exists():
+        return {}
+    # simple in-memory cache
+    if hasattr(app, '_genre_map'):
+        return app._genre_map
+    genre_map = {}
+    with open(CSV_PATH, newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            tid = row.get('track_id')
+            genre = row.get('track_genre')
+            if tid and genre:
+                genre_map[tid] = genre
+    app._genre_map = genre_map
+    return genre_map
+
+
+@app.route('/stats/genres')
+def stats_genres():
+    """Return genre counts aggregated from songs and songs_simulation using CSV genre map."""
+    genre_map = _load_genre_map()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # collect track ids from both tables
+    counts = {}
+    for tbl in ('songs', 'songs_simulation'):
+        try:
+            for row in c.execute(f'SELECT track_id FROM {tbl}'):
+                tid = row[0]
+                genre = genre_map.get(tid, 'unknown')
+                counts[genre] = counts.get(genre, 0) + 1
+        except Exception:
+            # table might not exist
+            continue
+    conn.close()
+    # convert to list
+    result = [{'genre': g, 'count': c} for g, c in counts.items()]
+    # sort descending
+    result.sort(key=lambda x: x['count'], reverse=True)
+    return jsonify(result)
+
+
+@app.route('/stats/kpis')
+def stats_kpis():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Count distinct real Spotify users
+    try:
+        real_users = c.execute('SELECT COUNT(DISTINCT spotify_id) FROM users').fetchone()[0] or 0
+    except Exception:
+        real_users = 0
+    # Count distinct simulated users (user_id in songs_simulation)
+    try:
+        sim_users = c.execute('SELECT COUNT(DISTINCT user_id) FROM songs_simulation').fetchone()[0] or 0
+    except Exception:
+        sim_users = 0
+    total_users = real_users + sim_users
+
+    # Count song rows from each table
+    try:
+        total_songs = c.execute('SELECT COUNT(*) FROM songs').fetchone()[0] or 0
+    except Exception:
+        total_songs = 0
+    try:
+        sim_songs = c.execute('SELECT COUNT(*) FROM songs_simulation').fetchone()[0] or 0
+    except Exception:
+        sim_songs = 0
+
+    conn.close()
+    total_songs_all = total_songs + sim_songs
+    avg_songs_per_user = (total_songs_all / total_users) if total_users > 0 else None
+    return jsonify({
+        'total_users': total_users,
+        'total_songs': total_songs_all,
+        'avg_songs_per_user': avg_songs_per_user,
+        'simulation_songs': sim_songs,
+    })
+
 
 if __name__ == '__main__':
     init_db()
