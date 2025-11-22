@@ -3,7 +3,7 @@ import webbrowser
 import urllib.parse
 
 # Configuration - these should be set by the user or via environment in production
-SPOTIFY_CLIENT_ID = os.environ.get('SPOTIFY_CLIENT_ID')
+SPOTIFY_CLIENT_ID = '99ed2c7a7c2a4912a301941033334d30'
 BACKEND_BASE = "http://127.0.0.1:5000"
 
 def main():
