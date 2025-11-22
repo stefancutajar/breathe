@@ -1,0 +1,11 @@
+# Ignore local environment file containing secrets
+env
+.env
+
+# Python virtualenv
+.venv/
+venv/
+
+# SQLite DB
+*.db
+spotify_demo.db
