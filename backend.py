@@ -44,6 +44,20 @@ def init_db():
         FOREIGN KEY(user_spotify_id) REFERENCES users(spotify_id)
     )
     ''')
+    # Artists table
+    c.execute('''
+    CREATE TABLE IF NOT EXISTS artists (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_spotify_id TEXT,
+        artist_id TEXT,
+        artist_name TEXT,
+        popularity INTEGER,
+        genres TEXT,
+        followers INTEGER,
+        spotify_url TEXT,
+        FOREIGN KEY(user_spotify_id) REFERENCES users(spotify_id)
+    )
+    ''')
     conn.commit()
     conn.close()
 
@@ -53,8 +67,9 @@ def save_user(spotify_id, display_name, email, data):
     # Save user
     c.execute('''INSERT OR REPLACE INTO users (spotify_id, display_name, email, data) VALUES (?, ?, ?, ?)''',
               (spotify_id, display_name, email, json.dumps(data)))
-    # Remove old songs for this user (if any)
+    # Remove old songs and artists for this user (if any)
     c.execute('DELETE FROM songs WHERE user_spotify_id = ?', (spotify_id,))
+    c.execute('DELETE FROM artists WHERE user_spotify_id = ?', (spotify_id,))
     # Save top tracks
     tracks = data.get('top_tracks', {}).get('items', [])
     for track in tracks:
@@ -71,6 +86,34 @@ def save_user(spotify_id, display_name, email, data):
         c.execute('''INSERT INTO songs (user_spotify_id, track_id, track_name, artist_name, album_name, spotify_url, album_url, artist_url)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                   (spotify_id, track_id, track_name, artist_name, album_name, spotify_url, album_url, artist_url))
+    # Save top artists
+    artists = data.get('top_artists', {}).get('items', [])
+    for artist in artists:
+        artist_id = artist.get('id')
+        artist_name = artist.get('name')
+        popularity = artist.get('popularity')
+        genres = ', '.join(artist.get('genres', []))
+        followers = artist.get('followers', {}).get('total')
+        spotify_url = artist.get('external_urls', {}).get('spotify')
+        c.execute('''INSERT INTO artists (user_spotify_id, artist_id, artist_name, popularity, genres, followers, spotify_url)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                  (spotify_id, artist_id, artist_name, popularity, genres, followers, spotify_url))
+# New endpoint to return all artists like /stats/songs
+@app.route('/stats/artists')
+def stats_artists():
+    """Return all rows from the artists table as JSON array."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('SELECT * FROM artists')
+        columns = [desc[0] for desc in c.description]
+        rows = c.fetchall()
+        result = [dict(zip(columns, row)) for row in rows]
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
+    conn.close()
+    return jsonify(result)
     conn.commit()
     conn.close()
 
@@ -116,18 +159,60 @@ def callback():
     profile_data = profile.json()
 
     # Fetch user's top tracks (short term)
-    top = requests.get('https://api.spotify.com/v1/me/top/tracks?limit=10', headers={'Authorization': f'Bearer {access_token}'})
-    top_data = top.json() if top.status_code == 200 else {'error': top.text}
+    top_tracks = requests.get('https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=short_term', headers={'Authorization': f'Bearer {access_token}'})
+    top_tracks_data = top_tracks.json() if top_tracks.status_code == 200 else {'error': top_tracks.text}
+
+    # Fetch user's top artists (short term)
+    top_artists = requests.get('https://api.spotify.com/v1/me/top/artists?limit=50&time_range=short_term', headers={'Authorization': f'Bearer {access_token}'})
+    top_artists_data = top_artists.json() if top_artists.status_code == 200 else {'error': top_artists.text}
 
     # Save into DB
     spotify_id = profile_data.get('id')
     display_name = profile_data.get('display_name')
     email = profile_data.get('email')
-    data = {'profile': profile_data, 'top_tracks': top_data, 'token_info': token_data}
+    data = {
+        'profile': profile_data,
+        'top_tracks': top_tracks_data,
+        'top_artists': top_artists_data,
+        'token_info': token_data
+    }
+
     try:
         save_user(spotify_id, display_name, email, data)
     except Exception as e:
         return f"DB save failed: {e}", 500
+
+    # After saving, redirect back to the Streamlit frontend with ?logged_in=1 so the user sees the dashboard.
+    STREAMLIT_BASE = os.environ.get('STREAMLIT_BASE') or 'http://127.0.0.1:8501'
+    return redirect(f"{STREAMLIT_BASE}?logged_in=1")
+
+@app.route('/stats/top-artists')
+def stats_top_artists():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        row = c.execute('SELECT data FROM users ORDER BY id DESC LIMIT 1').fetchone()
+        if not row:
+            conn.close()
+            return jsonify([])
+        data = json.loads(row[0])
+        artists = data.get('top_artists', {}).get('items', [])
+        # Only keep relevant fields for dataframe
+        result = []
+        for artist in artists:
+            result.append({
+                'artist_name': artist.get('name'),
+                'artist_id': artist.get('id'),
+                'popularity': artist.get('popularity'),
+                'genres': ', '.join(artist.get('genres', [])),
+                'followers': artist.get('followers', {}).get('total'),
+                'spotify_url': artist.get('external_urls', {}).get('spotify'),
+            })
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
+    conn.close()
+    return jsonify(result)
 
     # After saving, redirect back to the Streamlit frontend with ?logged_in=1 so the user sees the dashboard.
     STREAMLIT_BASE = os.environ.get('STREAMLIT_BASE') or 'http://127.0.0.1:8501'

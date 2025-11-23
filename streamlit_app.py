@@ -40,9 +40,24 @@ def show_songs_dataset():
     # Only keep and order the specified columns
     cols = ['user_spotify_id', 'track_id', 'track_name', 'artist_name', 'album_name']
     df = df[cols]
-    st.subheader('Songs Dataset (from DB)')
+    st.subheader('Songs Dataset')
     st.dataframe(df)
 
+def show_top_artists():
+    data = fetch_json('/stats/top-artists')
+    if not data or (isinstance(data, dict) and data.get('error')):
+        st.error('Failed to load top artists.')
+        return
+    df = pd.DataFrame(data)
+    if df.empty:
+        st.write('No top artists yet')
+        return
+    st.subheader('Top Artists (short term)')
+    # Show only relevant columns
+    cols = ['artist_name', 'artist_id', 'popularity', 'genres', 'followers', 'spotify_url']
+    df = df[cols]
+    st.dataframe(df)
+    
 def show_top_songs(limit=5):
     data = fetch_json('/stats/top-songs', params={'limit': limit})
     if not data:
@@ -123,6 +138,7 @@ def main():
         show_top_songs(limit=5)
         show_genre_bubbles()
         show_songs_dataset()
+        show_top_artists()
     else:
         st.info('No analytics data yet. After logging in with Spotify, the dashboard will populate automatically.')
 
