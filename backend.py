@@ -133,6 +133,21 @@ def callback():
     STREAMLIT_BASE = os.environ.get('STREAMLIT_BASE') or 'http://127.0.0.1:8501'
     return redirect(f"{STREAMLIT_BASE}?logged_in=1")
 
+@app.route('/stats/songs')
+def stats_songs():
+    """Return all rows from the songs table as JSON array."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('SELECT * FROM songs')
+        columns = [desc[0] for desc in c.description]
+        rows = c.fetchall()
+        result = [dict(zip(columns, row)) for row in rows]
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
+    conn.close()
+    return jsonify(result)
 
 @app.route('/stats/top-songs')
 def stats_top_songs():
@@ -204,9 +219,6 @@ def stats_top_songs():
     conn.close()
     return jsonify(top_n)
 
-
-
-
 def _load_genre_map():
     """Load a mapping track_id -> genre from CSV (cached per process)."""
     if not Path(CSV_PATH).exists():
@@ -224,7 +236,6 @@ def _load_genre_map():
                 genre_map[tid] = genre
     app._genre_map = genre_map
     return genre_map
-
 
 @app.route('/stats/genres')
 def stats_genres():
@@ -249,7 +260,6 @@ def stats_genres():
     # sort descending
     result.sort(key=lambda x: x['count'], reverse=True)
     return jsonify(result)
-
 
 @app.route('/stats/kpis')
 def stats_kpis():

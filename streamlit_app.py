@@ -20,7 +20,6 @@ def fetch_json(path, params=None, timeout=5):
         st.error(f"Failed to load {path}: {e}")
         return None
 
-
 def show_kpis():
     data = fetch_json('/stats/kpis')
     if not data:
@@ -31,6 +30,18 @@ def show_kpis():
     avg = data.get('avg_songs_per_user')
     cols[2].metric('Avg songs per user', f"{avg:.1f}" if avg is not None else 'n/a')
 
+def show_songs_dataset():
+    data = fetch_json('/stats/songs')
+    if not data or (isinstance(data, dict) and data.get('error')):
+        st.error('Failed to load songs dataset.')
+        return
+    import pandas as pd
+    df = pd.DataFrame(data)
+    # Only keep and order the specified columns
+    cols = ['user_spotify_id', 'track_id', 'track_name', 'artist_name', 'album_name']
+    df = df[cols]
+    st.subheader('Songs Dataset (from DB)')
+    st.dataframe(df)
 
 def show_top_songs(limit=5):
     data = fetch_json('/stats/top-songs', params={'limit': limit})
@@ -53,7 +64,6 @@ def show_top_songs(limit=5):
     df['probability'] = df['probability'].map(lambda x: f"{x:.3f}")
     st.table(df[['track_name', 'artist_name', 'probability']].head(limit))
 
-
 def show_genre_bubbles(max_bubbles=40):
     data = fetch_json('/stats/genres')
     if not data:
@@ -74,8 +84,6 @@ def show_genre_bubbles(max_bubbles=40):
         tooltip=['genre', 'count']
     ).properties(height=350)
     st.altair_chart(chart, use_container_width=True)
-
-
 
 def main():
     st.title("breathe")
@@ -114,6 +122,7 @@ def main():
         show_kpis()
         show_top_songs(limit=5)
         show_genre_bubbles()
+        show_songs_dataset()
     else:
         st.info('No analytics data yet. After logging in with Spotify, the dashboard will populate automatically.')
 
